@@ -234,7 +234,7 @@ def create_filename(url_string):
       url_string (str): The url to extract the name, start date, and end date from.
 
     Returns:
-      str: A filename in the format 'name_startdate_end_date'.
+      array (str, str): An array containing a filename in the format 'name_startdate_end_date' and the name of the candidate.
     """
     start_date_match = re.search(r"start_date=(\d{4}-\d{2}-\d{2})", url_string)
     end_date_match = re.search(r"end_date=(\d{4}-\d{2}-\d{2})", url_string)
