@@ -8,6 +8,7 @@ import pickle
 from requests.exceptions import ChunkedEncodingError, RequestException, HTTPError
 import numpy as np
 import os
+import shutil
 
 # If running in Colab, you may need to mount Google Drive and set working directory
 # from google.colab import drive
@@ -91,6 +92,13 @@ def get_full_text(results, checkpoint_path="loc_full_text.pkl", sleep_time=4, ch
       list: A list of lists, where each inner list contains [full_text, library_of_congress_control_number, location_city, location_state].
             None or np.nan will be used for failures or missing data.
     """
+    # Ensure the 'pkl' directory exists
+    checkpoint_dir = os.path.join(os.path.dirname(checkpoint_path), 'pkl')
+    if not os.path.exists(checkpoint_dir):
+        os.makedirs(checkpoint_dir)
+    # Always save checkpoints in the 'pkl' directory
+    checkpoint_filename = os.path.basename(checkpoint_path)
+    checkpoint_path = os.path.join(checkpoint_dir, checkpoint_filename)
     if os.path.exists(checkpoint_path):
         with open(checkpoint_path, "rb") as f:
             items = pickle.load(f)
@@ -114,8 +122,10 @@ def get_full_text(results, checkpoint_path="loc_full_text.pkl", sleep_time=4, ch
             resp.raise_for_status()
             data = resp.json()
             item_data = data.get("item", {})
+            pagination_data = data.get("pagination", {})
             full_text = data.get("full_text", None)
             loc_control_number = item_data.get("library_of_congress_control_number", None)
+            page_number = pagination_data.get("current", None)
             city_list = item_data.get("location_city", None)
             if city_list and isinstance(city_list, list):
                 location_city = city_list[0]
@@ -123,7 +133,7 @@ def get_full_text(results, checkpoint_path="loc_full_text.pkl", sleep_time=4, ch
             if state_list and isinstance(state_list, list):
                 location_state = state_list[0]
             date = item_data.get("date", None)
-            items.append([candidate_name if candidate_name else None, loc_control_number, date, location_city, location_state, full_text])
+            items.append([candidate_name if candidate_name else None, loc_control_number, date, location_city, location_state, page_number, full_text])
         except ChunkedEncodingError:
             print("  ChunkedEncodingError; retrying in 15s…")
             time.sleep(15)
@@ -132,14 +142,16 @@ def get_full_text(results, checkpoint_path="loc_full_text.pkl", sleep_time=4, ch
                 resp.raise_for_status()
                 data = resp.json()
                 item_data = data.get("item", {})
+                pagination_data = data.get("pagination", {})
                 full_text = data.get("full_text", None)
                 loc_control_number = item_data.get("library_of_congress_control_number", None)
+                page_number = pagination_data.get("current", None)
                 city_list = item_data.get("location_city", [])
                 location_city = city_list[0] if city_list and isinstance(city_list, list) else None
                 state_list = item_data.get("location_state", [])
                 location_state = state_list[0] if state_list and isinstance(state_list, list) else None
                 date = item_data.get("date", None)
-                items.append([candidate_name if candidate_name else None, loc_control_number, date, location_city, location_state, full_text])
+                items.append([candidate_name if candidate_name else None, loc_control_number, date, location_city, location_state, page_number, full_text])
             except Exception as e:
                 print(f"  Retry failed: {e}. Appending np.nan for all fields.")
                 items.append([np.nan, np.nan, np.nan, np.nan])
@@ -269,7 +281,7 @@ def flatten_triple_nested_array(triple_nested_array):
             flattened_data.append(doc_info)
     return flattened_data
 
-def complete_candidates_collector(xlsx):
+def complete_candidates_collector(xlsx, delete_pkl=False):
     """
     Collects and processes Library of Congress data for presidential candidates.
     This function orchestrates the entire data collection pipeline for presidential
@@ -281,6 +293,7 @@ def complete_candidates_collector(xlsx):
     Args:
         xlsx (str): The path to the Excel file containing candidate information
                     (e.g., 'RawData/AmericanStories/PresidentialCandidates_Wikipedia.xlsx').
+        delete_pkl (bool): Whether to delete the pkl directory after successful data collection.
 
     Returns:
         None: The function saves the processed data to a CSV file named
@@ -292,24 +305,37 @@ def complete_candidates_collector(xlsx):
     num_candidates = len(search_urls)
     print(f'Done. Created {num_candidates} links.')
     all_ids = []
-    for url in search_urls:
+    for url in search_urls[:2]:
         ids = []
         filename = create_filename(url)
         print(f'Starting ID Collection for Candidate {filename[0]}\n')
         get_ids_custom(url, items=ids)
-        texts = get_full_text(ids, checkpoint_path=f'{filename[0]}.pkl', candidate_name=filename[1])
+        # Save .pkl files in the 'pkl' directory
+        checkpoint_path = os.path.join('pkl', f'{filename[0]}.pkl')
+        texts = get_full_text(ids, checkpoint_path=checkpoint_path, candidate_name=filename[1])
         all_ids.append(texts)
         print(f'\nFinished ID Collection for Candidate {filename[0]}')
     print('All Data Collected. Concatenating all texts into DataFrame...')
     flattened = flatten_triple_nested_array(all_ids)
-    df = pd.DataFrame(flattened, columns=['name', 'library_of_congress_control_number', 'date', 'location_city', 'location_state', 'full_text'])
+    df = pd.DataFrame(flattened, columns=['name', 'library_of_congress_control_number', 'date', 'location_city', 'location_state', 'page_number', 'full_text'])
     df.to_csv('LOC_Presidential_Candidates_Complete_Data.csv')
     print("Done. Saved all data to 'LOC_Presidential_Candidates_Complete_Data.csv'")
+    
+    # Optionally remove the 'pkl' directory and all its contents after successful completion
+    if delete_pkl:
+        pkl_dir = 'pkl'
+        if os.path.exists(pkl_dir):
+            try:
+                shutil.rmtree(pkl_dir)
+                print("Checkpoint directory 'pkl' deleted after successful data collection.")
+            except Exception as e:
+                print(f"Warning: Could not delete 'pkl' directory: {e}")
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="LoC API Data Scraper for Presidential Candidates")
     parser.add_argument('xlsx', type=str, help='Path to the Excel file with candidate info (e.g., RawData/AmericanStories/PresidentialCandidates_Wikipedia.xlsx)')
+    parser.add_argument('--delete-pkl', action='store_true', help='Delete the pkl directory after successful data collection')
     args = parser.parse_args()
 
-    complete_candidates_collector(args.xlsx) 
+    complete_candidates_collector(args.xlsx, delete_pkl=args.delete_pkl) 

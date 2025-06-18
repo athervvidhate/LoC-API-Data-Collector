@@ -51,6 +51,10 @@ python aggregator.py PresidentialCandidates_Wikipedia.xlsx
 ```
 - The script will fetch data for each candidate and save the results to `LOC_Presidential_Candidates_Complete_Data.csv`.
 - Checkpoint files (`*.pkl`) are created to allow resuming if interrupted.
+- Optionally, you can delete the checkpoint folder after successful data collection by using the `--delete-pkl` flag:
+  ```bash
+  python aggregator.py PresidentialCandidates_Wikipedia.xlsx --delete-pkl
+  ```
 
 ### 3. Use the Notebook
 Open `aggregator.ipynb` in Jupyter or Colab for step-by-step data collection, exploration, and visualization.
@@ -64,6 +68,7 @@ The main output is a CSV file with columns:
 - `date`: Document/publication date
 - `location_city`: City of publication
 - `location_state`: State of publication
+- `page_number`: Page number of the document
 - `full_text`: OCR'd newspaper text
 
 ---
@@ -90,6 +95,38 @@ A: The final CSV is saved in the current working directory as `LOC_Presidential_
 
 **Q: How do I add more candidates or years?**
 A: Add rows to your Excel file with the desired years and candidate names, then rerun the script.
+
+**Q: How do I add more columns/variables to the final output CSV?**
+A: To add additional columns, you need to modify the `get_full_text` function in `aggregator.py`. This function extracts data from the API response. Here's how you can do it:
+
+1. **Identify the JSON Response Structure:**
+   The API returns a JSON object with various fields. You can explore the full JSON response by visiting any Chronicling America Document JSON API URL (e.g., [https://www.loc.gov/resource/sn83030007/1788-10-13/ed-1/?sp=2&q=George+Washington&fo=json](https://www.loc.gov/resource/sn83030007/1788-10-13/ed-1/?sp=2&q=George+Washington&fo=json)) to see all available fields.
+
+2. **Modify the `get_full_text` Function:**
+   In `aggregator.py`, locate the `get_full_text` function. You will see a section where the JSON response is processed. For example, to add a new field, you can extract it from the JSON response like this:
+
+   ```python
+   # Example: Extracting a new field from the JSON response
+   new_field = data.get("new_field_name", None)
+   ```
+
+   Replace `"new_field_name"` with the actual field name from the JSON response.
+
+3. **Update the DataFrame Creation:**
+   After extracting the new field, you need to include it in the list of items that are appended to the `items` list. For example:
+
+   ```python
+   items.append([candidate_name if candidate_name else None, loc_control_number, date, location_city, location_state, page_number, new_field, full_text])
+   ```
+
+4. **Update the DataFrame Columns:**
+   Finally, when creating the DataFrame in the `complete_candidates_collector` function, add the new column name to the `columns` list:
+
+   ```python
+   df = pd.DataFrame(flattened, columns=['name', 'library_of_congress_control_number', 'date', 'location_city', 'location_state', 'page_number', 'new_field', 'full_text'])
+   ```
+
+Make sure to test the changes to ensure the new fields are correctly extracted and included in the final output.
 
 ---
 
