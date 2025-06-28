@@ -27,10 +27,15 @@ def get_ids_custom(url, items=[], params={"fo": "json", "c": 100, "at": "results
     Returns:
         list: The list 'items' populated with all retrieved IDs.
     """
+    # Initial API request to get first page of results
     r = requests.get(url, params=params)
     r.raise_for_status()
+    
+    # Extract IDs from first page
     for result in r.json()['results']:
         items.append(result.get('id'))
+    
+    # Handle pagination - continue fetching until no more pages
     next_page = r.json()['pagination'].get('next')
     count = 0
     while next_page:
@@ -41,11 +46,15 @@ def get_ids_custom(url, items=[], params={"fo": "json", "c": 100, "at": "results
                 items.append(result.get('id'))
             next_page = r.json()['pagination'].get('next')
             print(f"Fetched {len(items)} items so far...")
+            
+            # Rate limiting: wait every 2 requests to avoid overwhelming the API
             if count % 2 == 0:
                 print('Waiting for 5 seconds...')
                 time.sleep(5)
             count += 1
+            
         except ChunkedEncodingError:
+            # Handle connection errors with retry logic
             print(f"ChunkedEncodingError encountered for {url}. Retrying after 15 seconds...")
             time.sleep(15)
             try:
@@ -65,6 +74,7 @@ def get_ids_custom(url, items=[], params={"fo": "json", "c": 100, "at": "results
                 items.append(np.nan)
                 continue
         except HTTPError as http_err:
+            # Handle rate limiting (429) and other HTTP errors
             if http_err.response.status_code == 429:
                 print(f'Too many requests (429) when accessing {url}. Stopping early.')
                 print(f'Current number of requests: {len(items)}.')
@@ -92,13 +102,16 @@ def get_full_text(results, checkpoint_path="loc_full_text.pkl", sleep_time=4, ch
       list: A list of lists, where each inner list contains [full_text, library_of_congress_control_number, location_city, location_state].
             None or np.nan will be used for failures or missing data.
     """
-    # Ensure the 'pkl' directory exists
+    # Ensure the 'pkl' directory exists for checkpoint files
     checkpoint_dir = os.path.join(os.path.dirname(checkpoint_path), 'pkl')
     if not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir)
+    
     # Always save checkpoints in the 'pkl' directory
     checkpoint_filename = os.path.basename(checkpoint_path)
     checkpoint_path = os.path.join(checkpoint_dir, checkpoint_filename)
+    
+    # Load existing checkpoint if available
     if os.path.exists(checkpoint_path):
         with open(checkpoint_path, "rb") as f:
             items = pickle.load(f)
@@ -108,24 +121,35 @@ def get_full_text(results, checkpoint_path="loc_full_text.pkl", sleep_time=4, ch
         items = []
         start_idx = 0
         print("No checkpoint found; starting from scratch.")
+    
     last_save_time = time.time()
+    
+    # Process each URL in the results list
     for i in range(start_idx, len(results)):
         url = results[i]
         print(f"[{i+1}/{len(results)}] Downloading {url}")
+        
+        # Initialize variables for document metadata
         full_text = None
         loc_control_number = None
         location_city = None
         location_state = None
         date = None
+        
         try:
+            # Fetch document data from LoC API
             resp = requests.get(url, params={"fo": "json"})
             resp.raise_for_status()
             data = resp.json()
+            
+            # Extract metadata from response
             item_data = data.get("item", {})
             pagination_data = data.get("pagination", {})
             full_text = data.get("full_text", None)
             loc_control_number = item_data.get("library_of_congress_control_number", None)
             page_number = pagination_data.get("current", None)
+            
+            # Handle location data (may be lists)
             city_list = item_data.get("location_city", None)
             if city_list and isinstance(city_list, list):
                 location_city = city_list[0]
@@ -133,8 +157,12 @@ def get_full_text(results, checkpoint_path="loc_full_text.pkl", sleep_time=4, ch
             if state_list and isinstance(state_list, list):
                 location_state = state_list[0]
             date = item_data.get("date", None)
+            
+            # Store all extracted data
             items.append([candidate_name if candidate_name else None, loc_control_number, date, location_city, location_state, page_number, full_text])
+            
         except ChunkedEncodingError:
+            # Retry logic for connection errors
             print("  ChunkedEncodingError; retrying in 15s…")
             time.sleep(15)
             try:
@@ -156,6 +184,7 @@ def get_full_text(results, checkpoint_path="loc_full_text.pkl", sleep_time=4, ch
                 print(f"  Retry failed: {e}. Appending np.nan for all fields.")
                 items.append([np.nan, np.nan, np.nan, np.nan])
         except HTTPError as http_err:
+            # Handle rate limiting and other HTTP errors
             if http_err.response.status_code == 429:
                 print("  429 Too Many Requests—stopping early.")
                 break
@@ -168,8 +197,11 @@ def get_full_text(results, checkpoint_path="loc_full_text.pkl", sleep_time=4, ch
         except Exception as e:
             print(f"  Unexpected error: {e}; skipping.")
             items.append([np.nan, np.nan, np.nan, np.nan])
+        
         print(f"  Done. Sleeping {sleep_time}s…")
         time.sleep(sleep_time)
+        
+        # Checkpoint logic: save periodically or after time interval
         now = time.time()
         needs_save = (
             (i + 1) % checkpoint_interval == 0
@@ -180,6 +212,8 @@ def get_full_text(results, checkpoint_path="loc_full_text.pkl", sleep_time=4, ch
                 pickle.dump(items, f)
             print(f"  ⇒ Checkpoint saved at index {i+1}.")
             last_save_time = now
+    
+    # Final save
     with open(checkpoint_path, "wb") as f:
         pickle.dump(items, f)
     print("All done. Final checkpoint written.")
@@ -217,24 +251,33 @@ def candidate_aggregator(file_name):
       list: A list of strings, where each string is a fully constructed URL
             for a Chronicling America search query.
     """
+    # Define column names for candidate variations
     name_cols = [f'Candidate_var{i}' for i in range(1, 5)]
     df = pd.read_excel(file_name, usecols=['Year'] + name_cols)
+    
+    # Base URL template for LoC API searches
     base_url = (
         "https://www.loc.gov/collections/chronicling-america/?dl=page"
         "&start_date={year}-07-01&end_date={year}-11-15"
         "&qs={terms}&ops={ops}&searchType=advanced&fo=json"
     )
+    
     queries = []
     for row in df.itertuples(index=False):
         year = int(row.Year)
+        
+        # Extract valid candidate names (non-null, non-integer)
         names = [
             str(getattr(row, col)).replace(" ", "+")
             for col in name_cols
             if pd.notnull(getattr(row, col)) and not isinstance(getattr(row, col), int)
         ]
+        
+        # Build search query with proper formatting
         terms = "+".join(f'"{n}"' for n in names)
-        ops = '""' if len(names) == 1 else "OR"
+        ops = '""' if len(names) == 1 else "OR"  # Use OR operator for multiple names
         queries.append(base_url.format(year=year, terms=terms, ops=ops))
+    
     return queries
 
 def create_filename(url_string):
@@ -248,14 +291,19 @@ def create_filename(url_string):
     Returns:
       array (str, str): An array containing a filename in the format 'name_startdate_end_date' and the name of the candidate.
     """
+    # Extract components using regex patterns
     start_date_match = re.search(r"start_date=(\d{4}-\d{2}-\d{2})", url_string)
     end_date_match = re.search(r"end_date=(\d{4}-\d{2}-\d{2})", url_string)
     name_match = re.search(r'qs="([^"]+)"', url_string)
+    
     start_date = start_date_match.group(1) if start_date_match else None
     end_date = end_date_match.group(1) if end_date_match else None
     name = name_match.group(1) if name_match else None
+    
+    # Clean up name for filename use
     if name:
         name = name.replace('+', '_')
+    
     if start_date and end_date and name:
         return [f"{name}_{start_date}_{end_date}", name]
     else:
@@ -264,7 +312,6 @@ def create_filename(url_string):
 def flatten_triple_nested_array(triple_nested_array):
     """
     Flattens a triple-nested list into a single-nested list of document information.
-
 
     Args:
         triple_nested_array (list): A list of lists, where the innermost lists
@@ -276,6 +323,7 @@ def flatten_triple_nested_array(triple_nested_array):
               information (full text, id, city, state).
     """
     flattened_data = []
+    # Flatten the nested structure: candidates -> documents -> document info
     for candidate_docs in triple_nested_array:
         for doc_info in candidate_docs:
             flattened_data.append(doc_info)
@@ -300,21 +348,29 @@ def complete_candidates_collector(xlsx, delete_pkl=False):
                 'LOC_Presidential_Candidates_Complete_Data.csv' and does not return
                 any value.
     """
+    # Step 1: Generate search URLs from Excel file
     print('Creating all links from inputted file...')
     search_urls = candidate_aggregator(xlsx)
     num_candidates = len(search_urls)
     print(f'Done. Created {num_candidates} links.')
+    
     all_ids = []
+    # Step 2: Process each candidate's search results
     for url in search_urls:
         ids = []
         filename = create_filename(url)
         print(f'Starting ID Collection for Candidate {filename[0]}\n')
+        
+        # Get document IDs for this candidate
         get_ids_custom(url, items=ids)
-        # Save .pkl files in the 'pkl' directory
+        
+        # Save .pkl files in the 'pkl' directory for checkpointing
         checkpoint_path = os.path.join('pkl', f'{filename[0]}.pkl')
         texts = get_full_text(ids, checkpoint_path=checkpoint_path, candidate_name=filename[1])
         all_ids.append(texts)
         print(f'\nFinished ID Collection for Candidate {filename[0]}')
+    
+    # Step 3: Combine and save all collected data
     print('All Data Collected. Concatenating all texts into DataFrame...')
     flattened = flatten_triple_nested_array(all_ids)
     df = pd.DataFrame(flattened, columns=['name', 'library_of_congress_control_number', 'date', 'location_city', 'location_state', 'page_number', 'full_text'])
