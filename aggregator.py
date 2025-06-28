@@ -305,7 +305,7 @@ def complete_candidates_collector(xlsx, delete_pkl=False):
     num_candidates = len(search_urls)
     print(f'Done. Created {num_candidates} links.')
     all_ids = []
-    for url in search_urls[:2]:
+    for url in search_urls:
         ids = []
         filename = create_filename(url)
         print(f'Starting ID Collection for Candidate {filename[0]}\n')
